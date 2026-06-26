@@ -262,7 +262,7 @@ fi
 
 echo_BMC "Done, checksums were validated successfully."
 """
-
+stop_event = threading.Event()
 # --- Global HTTP Server Variable ---
 http_server = None
 server_lock = threading.Lock()
@@ -2046,7 +2046,6 @@ class PlatypusApp:
                         pass
         except Exception as e:
             self.log_message(f"Error cleaning minicom processes: {e}")
-    
 
     def cleanup_server_processes(self):
         """Clean up any running server processes (TFTP, HTTP, etc.)"""
@@ -2513,6 +2512,7 @@ class PlatypusApp:
             error_msg="Please enter Host IP and select a serial device"
         ):
             self.log_message("Starting EEPROM flashing operation...")
+    
 
     async def run_flash_eeprom(self):
         """Run flash EEPROM operation with strict filename validation"""
@@ -2608,7 +2608,7 @@ class PlatypusApp:
                 self.root, 
                 "Select Firmware File",
                 self.last_firmware_dir,
-                "Firmware Files (*.tar.gz *.bin *.img) | *.tar.gz;*.bin;*.img"
+                "Firmware Files (*.tar.gz) | *.tar.gz"
             )
             
             if not self.flash_file:
@@ -2829,95 +2829,6 @@ class PlatypusApp:
             else:
                 self.log_message("  No zombie processes found")
         
-        def try_snap_firefox_new_tab(url, user):
-            """Try to open new tab in existing Snap Firefox"""
-            
-            # Snap Firefox commands with new-window fallback
-            snap_commands = [
-                # Method 1: Try new-tab first
-                f"sudo -u {user} snap run firefox --new-tab --url '{url}'",
-                
-            ]
-            
-            for i, cmd in enumerate(snap_commands, 1):
-                try:
-                    method_name = (
-                        "new-tab" if "--new-tab" in cmd else
-                        "new-window" if "--new-window" in cmd else
-                        "new-instance" if "--new-instance" in cmd else
-                        "no-remote" if "--no-remote" in cmd else
-                        "direct"
-                    )
-                    
-                    self.log_message(f"Firefox method {i} ({method_name}): Trying...")
-                    
-                    result = subprocess.run(
-                        cmd,
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=10
-                    )
-                    
-                    if result.returncode == 0:
-                        self.log_message(f"✓ Firefox launched successfully with {method_name}")
-                        return True
-                    else:
-                        self.log_message(f"  Method {i} failed (code: {result.returncode})")
-                        
-                except subprocess.TimeoutExpired:
-                    self.log_message(f"  Method {i} timed out")
-                except Exception as e:
-                    self.log_message(f"  Method {i} error: {e}")
-                    
-            return False
-        
-        def launch_snap_firefox():
-            try:
-                # Get real user
-                real_user = get_real_user()
-                
-                if not real_user:
-                    self.log_message("❌ Could not determine real user")
-
-                    return False
-                
-                self.log_message(f"Real user: {real_user}")
-                self.log_message("Preparing Firefox launch...")
-                
-                # Step 1: Clean up lock files
-                cleanup_firefox_locks(real_user)
-                
-                # Step 2: Kill any zombie processes
-                kill_zombie_firefox_processes(real_user)
-                
-                # Step 3: Wait a moment for cleanup to complete
-                import time
-                time.sleep(1)
-                
-                # Step 4: Try to launch Firefox
-                self.log_message("Attempting to launch Firefox...")
-                
-                if try_snap_firefox_new_tab(bmc_url, real_user):
-                    self.log_message("🎉 Firefox opened successfully!")
-                    return True
-                
-                # All methods failed
-                self.log_message("❌ All Firefox launch methods failed")
-                
-                # Show helpful instructions
-
-                return False
-                    
-            except Exception as e:
-                self.log_message(f"❌ Error during Firefox launch: {e}")
-                
-
-                return False
-        
-        # Launch Firefox in background thread
-        threading.Thread(target=launch_snap_firefox, daemon=True).start()
-
     async def run_set_bmc_ip(self):
         """Run set BMC IP operation with Web UI hyperlink update"""
         try:
