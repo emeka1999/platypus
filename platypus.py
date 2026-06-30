@@ -24,7 +24,7 @@ try:
 except ImportError:
     MULTI_UNIT_AVAILABLE = False
     print("Multi-unit functionality not available (extra.py not found)")
-VERSION = "6.1.1"  
+VERSION = "6.1.2"  
 # --- Embedded DMI Scripts ---
 
 # FRU_flash_v2.sh content
@@ -505,14 +505,41 @@ class FileSelectionHelper:
     """Helper class to standardize and simplify file/directory selection dialogs"""
 
     @staticmethod
-    def _default_dir(last_dir):
-        """Return last_dir if valid, otherwise default to /home"""
-        if last_dir and os.path.isdir(last_dir):
-            return last_dir
+    def get_real_home():
+        """Gets the actual user's home directory, even if running under sudo"""
+        import pwd
+        import os
+        
+        # Try to get the real user if the app was launched via sudo
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user:
+            try:
+                return pwd.getpwnam(sudo_user).pw_dir
+            except KeyError:
+                pass
+        
+        # Standard home expansion
         home = os.path.expanduser("~")
+        
+        # If it resolved to root, try to guess the real user directory in /home
         if home == "/root" or not os.path.isdir(home):
+            try:
+                users = [d for d in os.listdir("/home") if os.path.isdir(os.path.join("/home", d))]
+                if len(users) == 1:  # If there's only one user on the machine, it's a safe bet
+                    return os.path.join("/home", users[0])
+            except Exception:
+                pass
             return "/home"
+            
         return home
+
+    @staticmethod
+    def _default_dir(last_dir):
+        """Return last_dir if valid, otherwise default to the real user's home"""
+        # Ensure we don't accidentally default to the root directory
+        if last_dir and os.path.isdir(last_dir) and last_dir != "/root":
+            return last_dir
+        return FileSelectionHelper.get_real_home()
 
     @staticmethod
     def select_file(parent, title, last_dir, file_filter=None):
@@ -561,6 +588,10 @@ class FileSelectionHelper:
         dialog.attributes('-topmost', True)
         dialog.resizable(True, True)
 
+        # Initialize to the real home if the default is empty or root
+        if not default_value or default_value == "/root":
+            default_value = FileSelectionHelper.get_real_home()
+
         path_var = ctk.StringVar(value=default_value)
 
         main_frame = ctk.CTkFrame(dialog)
@@ -579,18 +610,23 @@ class FileSelectionHelper:
         def browse_for_path():
             parent.update_idletasks()
             parent.lift()
+            initial = FileSelectionHelper._default_dir(path_var.get())
             if "directory" in message.lower():
-                result = filedialog.askdirectory(title=f"Browse for {title}",
-                                                 initialdir=FileSelectionHelper._default_dir(default_value))
+                result = filedialog.askdirectory(title=f"Browse for {title}", initialdir=initial)
                 if result:
                     path_var.set(result)
             else:
-                result = filedialog.askopenfilename(title=f"Browse for {title}",
-                                                    initialdir=FileSelectionHelper._default_dir(default_value))
+                result = filedialog.askopenfilename(title=f"Browse for {title}", initialdir=initial)
                 if result:
                     path_var.set(result)
 
-        ctk.CTkButton(browse_frame, text="Browse...", command=browse_for_path, width=100).pack(side="right")
+        def set_to_home():
+            """Quick action to set the path to the real home directory"""
+            path_var.set(FileSelectionHelper.get_real_home())
+
+        ctk.CTkButton(browse_frame, text="Browse...", command=browse_for_path, width=100).pack(side="right", padx=(5, 0))
+        # New quick-action Home button
+        ctk.CTkButton(browse_frame, text="🏠 Home", command=set_to_home, width=100, fg_color="#444444", hover_color="#666666").pack(side="right")
 
         result_path = []
 
@@ -784,7 +820,7 @@ class FlashAllWindow(ctk.CTkToplevel):
             allowed_fip_files = {"fip-snuc-nanobmc.bin", "fip-snuc-mos-bmc.bin"}
             
             if filename not in allowed_fip_files:
-                self.log_message(f"❌ Invalid FIP file: '{filename}'")
+                self.log_message(f" Invalid FIP file: '{filename}'")
                 self.log_message(f"Allowed files: {', '.join(allowed_fip_files)}")
                 
                 from tkinter import messagebox
@@ -827,7 +863,7 @@ class FlashAllWindow(ctk.CTkToplevel):
             filename = os.path.basename(file_path)
             
             if filename != "fru.bin":
-                self.log_message(f"❌ Invalid EEPROM file: '{filename}'")
+                self.log_message(f" Invalid EEPROM file: '{filename}'")
                 self.log_message(f"Required file: 'fru.bin'")
                 
                 from tkinter import messagebox
@@ -922,7 +958,7 @@ class PlatypusApp:
 
         # Create main window with specific class name
         self.root = ctk.CTk(className="PlatypusApp")  # Set class name during creation
-        self.root.title("Platypus BMC Management - 6.1.1")
+        self.root.title("Platypus BMC Management - 6.1.2")
         self.root.geometry("800x850")  # Adjusted to fit 1080p
         
         # Initialize variables
@@ -1149,6 +1185,8 @@ class PlatypusApp:
         self.fru_asmid = ctk.StringVar()
         self.fru_mfg = ctk.StringVar(value="Simply NUC")
         self.sku_list = [] # Will be populated by load_or_create_skus
+        # Master Home Directory
+        self.user_home_dir = ""
 
     def execute_flash_all(self, firmware_folder, fip_file, eeprom_file=None, bmc_type=2, do_flash_fru=True):
             """
@@ -1380,6 +1418,7 @@ class PlatypusApp:
                         self.last_firmware_dir = config.get("last_firmware_dir", os.path.expanduser("~"))
                         self.last_fip_dir = config.get("last_fip_dir", os.path.expanduser("~"))
                         self.last_eeprom_dir = config.get("last_eeprom_dir", os.path.expanduser("~"))
+                        self.user_home_dir = config.get("user_home_dir", "")
                         
                         # Load Flash All specific paths
                         self.last_flash_all_folder = config.get("last_flash_all_folder", "")
@@ -1487,6 +1526,9 @@ class PlatypusApp:
             "last_sku": self.fru_sku.get(),
             "last_asmid": self.fru_asmid.get(),
             "last_mfg": self.fru_mfg.get(),
+
+            # Save Master home
+            "user_home_dir": getattr(self, 'user_home_dir', ""),
         }
         try:
             with open(self.CONFIG_FILE, 'w') as config_file:
@@ -1649,7 +1691,8 @@ class PlatypusApp:
             ("Flash FRU (EEPROM)", self.flash_eeprom),
             ("Flash All", self.on_flash_all),
             ("Multi-Unit Flash", self.open_multi_unit_flash),  # NEW BUTTON
-            ("Reboot to Bootloader", self.reboot_to_bootloader)
+            ("Reboot to Bootloader", self.reboot_to_bootloader),
+            ("Set Home Directory", self.set_home_directory)
         ]
         
         for i, (text, command) in enumerate(ops):
@@ -1984,7 +2027,7 @@ class PlatypusApp:
             
             # If no interfaces found, show error and keep current
             if not ips:
-                self.log_message("❌ No network interfaces found")
+                self.log_message(" No network interfaces found")
                 return
                 
             # Update the dropdown values with all detected IPs
@@ -2010,7 +2053,7 @@ class PlatypusApp:
             self.log_message(f"Host IP dropdown updated with {len(ips)} interface(s)")
                     
         except Exception as e:
-            self.log_message(f"❌ Error updating network interfaces: {e}")
+            self.log_message(f" Error updating network interfaces: {e}")
             # Don't crash - just keep whatever was there before
 
     def log_message(self, message):
@@ -2763,6 +2806,30 @@ class PlatypusApp:
             self.log_message(f"Error during IP setup: {e}")
         finally:
             self.lock_buttons = False
+
+    def set_home_directory(self):
+        """Let the user explicitly set the base directory for all file dialogs."""
+        # Start at the currently set home, or fallback to the OS real home
+        start_dir = getattr(self, 'user_home_dir', "")
+        if not start_dir or not os.path.exists(start_dir):
+            start_dir = FileSelectionHelper.get_real_home()
+            
+        new_home = FileSelectionHelper.select_directory(
+            self.root, 
+            "Select Master Home Directory", 
+            start_dir
+        )
+        
+        if new_home:
+            self.user_home_dir = new_home
+            # Immediately override all individual trackers
+            self.last_firmware_dir = new_home
+            self.last_fip_dir = new_home
+            self.last_eeprom_dir = new_home
+            
+            # Save the new configuration
+            self.save_config()
+            self.log_message(f"🏠 Master home directory updated to: {new_home}")
             
 
 def main():
